@@ -1,6 +1,9 @@
 pyproject.toml
 src/price_monitor/__init__.py
+src/price_monitor/__main__main__.py
 src/price_monitor/cli.py
+src/price_monitor/generate_scenarios.py
+src/price_monitor/scenario_grid.py
 src/price_monitor/scenarios.py
 src/price_monitor.egg-info/PKG-INFO
 src/price_monitor.egg-info/SOURCES.txt

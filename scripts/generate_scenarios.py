@@ -10,7 +10,7 @@ def main():
 
     alquileres = list(range(200_000, 1_200_001, 100_000))
     expensas = [0, 50_000, 100_000]
-    meses = [12, 24, 36]
+    meses = [3, 6, 12, 24, 36]
 
     rows = []
     i = 1
