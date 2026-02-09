@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import PatternFill
 
 
 def seg(a: float) -> str:
@@ -41,9 +44,47 @@ def load_latest():
 
 
 def pick_plan(df):
-    # contado si existe, sino menor cuotas
     df = df.sort_values(["scenario_id", "cuotas"])
     return df.groupby("scenario_id", as_index=False).first()
+
+
+def apply_formatting(xlsx_path: Path):
+    wb = load_workbook(xlsx_path)
+    ws = wb.active
+
+    # escala de color para precio promedio
+    price_rule = ColorScaleRule(
+        start_type="min", start_color="63BE7B",
+        mid_type="percentile", mid_value=50, mid_color="FFEB84",
+        end_type="max", end_color="F8696B"
+    )
+    ws.conditional_formatting.add("C2:C200", price_rule)
+
+    # escala para % descuento
+    desc_rule = ColorScaleRule(
+        start_type="min", start_color="F8696B",
+        mid_type="percentile", mid_value=50, mid_color="FFEB84",
+        end_type="max", end_color="63BE7B"
+    )
+    ws.conditional_formatting.add("D2:D200", desc_rule)
+
+    # pintar segmentos
+    fills = {
+        "hasta 500k": PatternFill("solid", fgColor="D9E1F2"),
+        "500k-800k": PatternFill("solid", fgColor="E2EFDA"),
+        "mayor_800k": PatternFill("solid", fgColor="FCE4D6"),
+    }
+
+    for row in ws.iter_rows(min_row=2, max_col=1):
+        val = row[0].value
+        if val in fills:
+            row[0].fill = fills[val]
+
+    # autofilter y freeze
+    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
+
+    wb.save(xlsx_path)
 
 
 def main():
@@ -65,6 +106,8 @@ def main():
 
     out = Path("output") / f"summary_simple_{stem}.xlsx"
     g.to_excel(out, index=False)
+
+    apply_formatting(out)
     print("Wrote", out)
 
 
