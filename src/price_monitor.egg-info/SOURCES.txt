@@ -1,0 +1,14 @@
+pyproject.toml
+src/price_monitor/__init__.py
+src/price_monitor/cli.py
+src/price_monitor/scenarios.py
+src/price_monitor.egg-info/PKG-INFO
+src/price_monitor.egg-info/SOURCES.txt
+src/price_monitor.egg-info/dependency_links.txt
+src/price_monitor.egg-info/entry_points.txt
+src/price_monitor.egg-info/requires.txt
+src/price_monitor.egg-info/top_level.txt
+src/price_monitor/clients/finaer.py
+src/price_monitor/io/excel.py
+src/price_monitor/io/files.py
+src/price_monitor/normalize/finaer.py

@@ -1,0 +1,2 @@
+[console_scripts]
+price-monitor = price_monitor.cli:main

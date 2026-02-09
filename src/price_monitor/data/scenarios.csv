@@ -1,0 +1,13 @@
+from __future__ import annotations
+import pandas as pd
+from pathlib import Path
+
+def load_scenarios_csv(path: str | Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    # normalizar tipos
+    df["alquiler"] = df["alquiler"].astype(int)
+    df["expensas"] = df["expensas"].astype(int)
+    df["meses"] = df["meses"].astype(int)
+    df["tipo_garantia"] = df["tipo_garantia"].astype(str).str.lower().isin(["true", "1", "yes"])
+    df["run"] = df["run"].astype(str).str.lower().isin(["true", "1", "yes"])
+    return df
