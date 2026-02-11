@@ -26,7 +26,7 @@ HOGGAX_API_LONG = Path("output/hoggax_rates_long.csv")
 OUT = Path("output/compare_borders_finaer_vs_hoggax.xlsx")
 
 TARGET_ALQ_EXP = {499_999, 799_999, 801_000}
-TARGET_MESES = {24, 36}
+TARGET_MESES = {12, 24, 36}
 TARGET_CUOTAS = {1, 3}
 
 # Finaer: 20% off SOLO contado (1 pago)

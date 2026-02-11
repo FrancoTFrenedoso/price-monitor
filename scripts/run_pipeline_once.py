@@ -14,13 +14,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Entradas únicas (misma entrada para ambos proveedores)
 ALQ_EXP_VALUES = [499_999, 799_999, 801_000]
 EXPENSAS = 0
-MESES = [24, 36]          # 24/36 “por web” para Hoggax, Finaer también los trae
+MESES = [12 ,24, 36]          # 24/36 “por web” para Hoggax, Finaer también los trae
 TIPO_GARANTIA = False     # mantené igual a tu pipeline actual
 
 
 def run(cmd: list[str]) -> None:
     print("\n>>", " ".join(cmd))
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    p = subprocess.run(cmd, cwd=REPO_ROOT, text=True, capture_output=True)
+    if p.stdout:
+        print(p.stdout)
+    if p.returncode != 0:
+        if p.stderr:
+            print(p.stderr)
+        raise SystemExit(p.returncode)
 
 
 def write_scenarios_csv() -> Path:

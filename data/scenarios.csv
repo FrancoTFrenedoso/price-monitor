@@ -1,7 +1,10 @@
 scenario_id,alquiler,expensas,meses,tipo_garantia,run
+S_499999_12,499999,0,12,False,True
 S_499999_24,499999,0,24,False,True
 S_499999_36,499999,0,36,False,True
+S_799999_12,799999,0,12,False,True
 S_799999_24,799999,0,24,False,True
 S_799999_36,799999,0,36,False,True
+S_801000_12,801000,0,12,False,True
 S_801000_24,801000,0,24,False,True
 S_801000_36,801000,0,36,False,True

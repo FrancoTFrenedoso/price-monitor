@@ -13,7 +13,7 @@ import requests
 
 API_URL = "https://api.hoggax.com/cotizador/individuo/cotizar"
 
-MESES_TO_PLAZO = {12: 1, 24: 2, 36: 3}
+MESES_TO_PLAZO = {24: 2, 36: 3}
 
 HEADERS = {
     "content-type": "application/json",
@@ -159,6 +159,47 @@ def main():
     rows: list[dict] = []
 
     for s in scenarios:
+        # ---- 12 meses: regla fija (NO API) ----
+        if s.meses == 12:
+            base = s.alquiler + s.expensas  # monto final = alq + exp
+
+            # 1 pago transferencia (15% OFF)
+            rows.append(
+                {
+                    "scenario_id": s.scenario_id,
+                    "alquiler": s.alquiler,
+                    "expensas": s.expensas,
+                    "alq_exp": base,
+                    "meses": s.meses,
+                    "cuotas": 1,
+                    "plan_texto": "15% OFF",
+                    "plan_subtexto": "Transferencia",
+                    "hoggax_sin_desc": base,
+                    "hoggax_total_web": int(round(base * 0.85)),
+                    "hoggax_monto_cuota": 0,
+                }
+            )
+
+            # 3 cuotas sin interés (sin descuento)
+            rows.append(
+                {
+                    "scenario_id": s.scenario_id,
+                    "alquiler": s.alquiler,
+                    "expensas": s.expensas,
+                    "alq_exp": base,
+                    "meses": s.meses,
+                    "cuotas": 3,
+                    "plan_texto": "3 CUOTAS sin interés",
+                    "plan_subtexto": "Crédito o Débito",
+                    "hoggax_sin_desc": base,
+                    "hoggax_total_web": base,
+                    "hoggax_monto_cuota": int(round(base / 3)),
+                }
+            )
+
+            continue
+
+        # ---- 24/36 meses: por API ----
         data = _request_hoggax(s)
         (OUT_RAW_DIR / f"{s.scenario_id}.json").write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -179,13 +220,9 @@ def main():
 
             cuotas = _cuotas_from_texto(texto)
 
-            # filtrar solo 1 y 3
             if cuotas not in TARGET_CUOTAS:
                 continue
 
-            # total del plan:
-            # - si precio_texto dice "Precio FINAL" => importe es total
-            # - si dice "Cuotas" => importe es cuota y el total viene en info_texto ("Importe total: ...")
             total = None
             monto_cuota = None
 
@@ -193,11 +230,9 @@ def main():
                 total = importe
                 monto_cuota = 0 if cuotas == 1 else _extract_cuota_from_info(info)
             else:
-                # cuotas
                 monto_cuota = importe
                 total = _extract_total_from_info(info)
                 if total is None and monto_cuota is not None and cuotas is not None:
-                    # fallback: total = cuota * cuotas (no ideal, pero mejor que null)
                     total = monto_cuota * cuotas
 
             rows.append(
@@ -225,7 +260,6 @@ def main():
     print("Wrote raw ->", OUT_RAW_DIR)
     print("Wrote csv ->", OUT_CSV)
     print(df)
-
 
 if __name__ == "__main__":
     main()
