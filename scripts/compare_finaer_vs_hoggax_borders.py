@@ -16,7 +16,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 # ---------------- Config ----------------
 # Si querés fijar el archivo de Finaer, dejalo así.
 # Si lo ponés None, toma el último output/finaer_*.xlsx (crudo) automáticamente.
-FINAER_XLSX_EXACT: Optional[Path] = Path("output/finaer_clean_cmp.xlsx")
+FINAER_XLSX_EXACT: Optional[Path] = None
 # Ejemplo para usar el crudo:
 # FINAER_XLSX_EXACT = Path("output/finaer_2026-02-11T135228Z.xlsx")
 
