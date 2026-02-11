@@ -8,26 +8,11 @@ def main():
     out = Path("data/scenarios.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    alquileres = list(range(200_000, 1_200_001, 100_000))  
-    expensas = [0, 50_000, 100_000]
-    meses = [12, 24, 36]            
-    tipo_garantia = [False]
-
-    rows = []
-    i = 1
-    for a in alquileres:
-        for e in expensas:
-            for m in meses:
-                for tg in tipo_garantia:
-                    rows.append({
-                        "scenario_id": f"AUTO_{i:04d}",
-                        "alquiler": a,
-                        "expensas": e,
-                        "meses": m,
-                        "tipo_garantia": tg,
-                        "run": True,
-                    })
-                    i += 1
+    rows = [
+        {"scenario_id": "S_499999_24", "alquiler": 499_999, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+        {"scenario_id": "S_799999_24", "alquiler": 799_999, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+        {"scenario_id": "S_801000_24", "alquiler": 801_000, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+    ]
 
     df = pd.DataFrame(rows)
     df.to_csv(out, index=False)

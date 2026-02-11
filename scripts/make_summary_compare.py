@@ -1,3 +1,4 @@
+# scripts/make_summary_compare.py
 from __future__ import annotations
 
 import json
@@ -6,19 +7,28 @@ from typing import Optional, cast
 
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.cell.cell import Cell, MergedCell
+from typing import Any, Mapping
 
 
-PLAZOS = [3, 6, 12, 24, 36]
+
+# Hoggax: 3/6/12/24/36 (según tu CSV manual)
+PLAZOS_HOGGAX = [3, 6, 12, 24, 36]
+# Finaer: NO existe 3/6 (según tu aclaración)
+PLAZOS_FINAER = [12, 24, 36]
+
+SEGMENTOS = ["hasta 500k", "500k-800k", "mayor_800k"]
+
+SENTINEL_CUOTAS = 10**9
 
 
 def to_float(x) -> Optional[float]:
     try:
-        if x is None or pd.isna(x):
+        if x is None or (isinstance(x, float) and pd.isna(x)) or pd.isna(x):
             return None
         return float(x)
     except Exception:
@@ -33,54 +43,151 @@ def segmento(alq_exp: float) -> str:
     return "mayor_800k"
 
 
-def load_latest_jsonl() -> Path:
-    files = sorted(Path("output").glob("finaer_*.jsonl"))
+def load_latest_jsonl(prefix: str = "finaer_") -> Path:
+    files = sorted(Path("output").glob(f"{prefix}*.jsonl"))
     if not files:
-        raise SystemExit("No hay output/finaer_*.jsonl. Corré primero: python -m price_monitor.cli")
+        raise SystemExit(f"No hay output/{prefix}*.jsonl. Corré primero: python -m price_monitor.cli")
     return files[-1]
 
 
-def pick_plan_contado(planes: list[dict]) -> dict:
+def cuotas_of(p: Mapping[str, Any]) -> int:
+    c = p.get("cuotas")
+    if c is None:
+        c = p.get("cantidad_de_cuotas")
+
+    if c is None:
+        return SENTINEL_CUOTAS
+
+    # a veces viene "12", 12.0, "12 cuotas", etc.
+    if isinstance(c, bool):
+        return SENTINEL_CUOTAS
+
+    try:
+        if isinstance(c, str):
+            c = c.strip()
+            # opcional: quedarte con los dígitos iniciales
+            # ejemplo "12 cuotas" -> "12"
+            num = ""
+            for ch in c:
+                if ch.isdigit():
+                    num += ch
+                elif num:
+                    break
+            return int(num) if num else SENTINEL_CUOTAS
+
+        return int(c)
+    except Exception:
+        return SENTINEL_CUOTAS
+
+
+def pick_plan_contado(planes: list[Mapping[str, Any]]) -> Mapping[str, Any]:
     if not planes:
         return {}
-    for p in planes:
-        c = p.get("cuotas", p.get("cantidad_de_cuotas"))
-        if c is not None and int(c) == 1:
-            return p
-    return sorted(planes, key=lambda p: float(p.get("monto_final") or 1e18))[0]
+
+    # 1) cuota=1 gana
+    ones = [p for p in planes if cuotas_of(p) == 1]
+    if ones:
+        return ones[0]
+
+    # 2) si no hay 1 cuota: menor monto_final
+    def monto_key(p: Mapping[str, Any]) -> float:
+        v = p.get("monto_final")
+        try:
+            return float(v) if v is not None else 1e18
+        except Exception:
+            return 1e18
+
+    return sorted(planes, key=monto_key)[0]
 
 
-def load_hoggax_rates(path: str = "data/hoggax_rates.csv") -> pd.DataFrame:
+def load_hoggax_rates_long(path: str) -> pd.DataFrame:
     """
-    Espera:
-      segmento,3,6,12,24,36
-    Puede venir:
-      - en porcentaje: 60,80,90,195,231
-      - o en fracción: 0.6,0.8,0.9,1.95,2.31
-    Normaliza a PORCENTAJE (60,80,90,...)
+    Soporta dos formatos:
+
+    1) LONG (completo):
+       segmento,plazo_meses,hoggax_precio_$,hoggax_desc_pct,hoggax_pct_sobre_total,hoggax_cuota_$,hoggax_cuotas
+
+    2) WIDE (solo % sobre total):
+       segmento,3,6,12,24,36
+       (donde cada columna de plazo contiene hoggax_pct_sobre_total)
     """
     df = pd.read_csv(path)
+
+    # normalizar nombres
+    df = df.rename(columns={c: str(c).strip() for c in df.columns})
+
+    # ---- caso WIDE: columnas '3','6','12','24','36' ----
+    wide_plazos = [c for c in df.columns if str(c).strip().isdigit()]
+    if "segmento" in df.columns and wide_plazos:
+        df["segmento"] = df["segmento"].astype(str).str.strip()
+
+        # melt a long
+        df_long = df.melt(
+            id_vars=["segmento"],
+            value_vars=wide_plazos,
+            var_name="plazo_meses",
+            value_name="hoggax_pct_sobre_total",
+        )
+
+        df_long["plazo_meses"] = pd.to_numeric(df_long["plazo_meses"], errors="coerce").astype("Int64")
+        df_long["hoggax_pct_sobre_total"] = pd.to_numeric(df_long["hoggax_pct_sobre_total"], errors="coerce")
+
+        # normalizar a %
+        vals = df_long["hoggax_pct_sobre_total"].dropna()
+        if len(vals) and float(vals.max()) <= 3.5:
+            df_long["hoggax_pct_sobre_total"] = df_long["hoggax_pct_sobre_total"] * 100.0
+
+        # completar columnas faltantes (no existen en wide)
+        df_long["hoggax_precio_$"] = pd.NA
+        df_long["hoggax_desc_pct"] = pd.NA
+        df_long["hoggax_cuota_$"] = pd.NA
+        df_long["hoggax_cuotas"] = pd.NA
+
+        return df_long[
+            [
+                "segmento",
+                "plazo_meses",
+                "hoggax_precio_$",
+                "hoggax_desc_pct",
+                "hoggax_pct_sobre_total",
+                "hoggax_cuota_$",
+                "hoggax_cuotas",
+            ]
+        ]
+
+    # ---- caso LONG: validar columnas requeridas ----
+    required = [
+        "segmento",
+        "plazo_meses",
+        "hoggax_precio_$",
+        "hoggax_desc_pct",
+        "hoggax_pct_sobre_total",
+        "hoggax_cuota_$",
+        "hoggax_cuotas",
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"CSV Hoggax inválido. Faltan columnas: {missing}. Columnas presentes: {list(df.columns)}"
+        )
+
     df["segmento"] = df["segmento"].astype(str).str.strip()
+    df["plazo_meses"] = pd.to_numeric(df["plazo_meses"], errors="coerce").astype("Int64")
 
-    # renombrar columnas numéricas a int
-    df = df.rename(columns={c: int(c) for c in df.columns if isinstance(c, str) and c.isdigit()})
+    for c in ["hoggax_precio_$", "hoggax_desc_pct", "hoggax_pct_sobre_total", "hoggax_cuota_$", "hoggax_cuotas"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # asegurar columnas
-    for m in PLAZOS:
-        if m not in df.columns:
-            df[m] = pd.NA
-
-    # convertir a número
-    for m in PLAZOS:
-        df[m] = pd.to_numeric(df[m], errors="coerce")
-
-    # si parecen fracciones (max <= 3.5), convertir a porcentaje
-    vals = pd.concat([df[m].dropna() for m in PLAZOS], ignore_index=True)
+    # desc_pct: puede venir 0.15 o 15 -> %
+    vals = df["hoggax_desc_pct"].dropna()
     if len(vals) and float(vals.max()) <= 3.5:
-        for m in PLAZOS:
-            df[m] = df[m] * 100.0
+        df["hoggax_desc_pct"] = df["hoggax_desc_pct"] * 100.0
 
-    return df[["segmento"] + PLAZOS]
+    # pct_sobre_total: puede venir 0.06 o 6 -> %
+    vals2 = df["hoggax_pct_sobre_total"].dropna()
+    if len(vals2) and float(vals2.max()) <= 3.5:
+        df["hoggax_pct_sobre_total"] = df["hoggax_pct_sobre_total"] * 100.0
+
+    return df
 
 
 def style_header_row(ws: Worksheet, row: int, start_col: int, end_col: int):
@@ -106,206 +213,352 @@ def heatmap(ws: Worksheet, rng: str):
     )
 
 
-def write_matrix(ws: Worksheet, title: str, df_matrix_pct: pd.DataFrame, start_col: int):
+def safe_set(cell: Cell, value):
+    if isinstance(cell, MergedCell):
+        return
+    cell.value = value
+
+
+def write_matrix_percent(
+    ws: Worksheet,
+    title: str,
+    df_matrix_pct: pd.DataFrame,
+    plazos: list[int],
+    start_row: int,
+    start_col: int,
+):
     """
-    df_matrix_pct: columnas ["segmento","3","6","12","24","36"] con valores en porcentaje (18.0).
+    df_matrix_pct: columnas: segmento + str(plazo) con valores en % (ej 60.0 para 60%)
     """
-    r0 = 1
+    r0 = start_row
     c0 = start_col
 
-    # título
-    tcell = cast(Cell, ws.cell(r0, c0, value=title))
+    tcell = cast(Cell, ws.cell(r0, c0))
+    safe_set(tcell, title)
     tcell.font = Font(bold=True)
     tcell.fill = PatternFill("solid", fgColor="C6E0B4")
     tcell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.merge_cells(start_row=r0, start_column=c0, end_row=r0, end_column=c0 + len(PLAZOS))
+    ws.merge_cells(start_row=r0, start_column=c0, end_row=r0, end_column=c0 + len(plazos))
 
     # header
     ws.cell(r0 + 1, c0, value="segmento")
-    for i, m in enumerate(PLAZOS):
+    for i, m in enumerate(plazos):
         ws.cell(r0 + 1, c0 + 1 + i, value=m)
-    style_header_row(ws, r0 + 1, c0, c0 + len(PLAZOS))
+    style_header_row(ws, r0 + 1, c0, c0 + len(plazos))
 
-    # data (NO itertuples: columnas "3","6"... no son atributos)
+    # data
     for i, (_, row) in enumerate(df_matrix_pct.iterrows(), start=0):
         rr = r0 + 2 + i
         ws.cell(rr, c0, value=str(row["segmento"]))
-
-        for k, m in enumerate(PLAZOS):
+        for k, m in enumerate(plazos):
             v = row.get(str(m), None)
             cell = cast(Cell, ws.cell(rr, c0 + 1 + k))
-
-            # defensivo
-            if isinstance(cell, MergedCell) or cell.coordinate in ws.merged_cells:
-                continue
-
             fv = to_float(v)
             if fv is None:
-                cell.value = None
+                safe_set(cell, None)
             else:
-                # porcentaje (18.0) -> fracción (0.18) para formato %
-                cell.value = fv / 100.0
+                # Excel/Sheets: % requiere fracción
+                safe_set(cell, fv / 100.0)
                 cell.number_format = "0.00%"
             cell.alignment = Alignment(horizontal="center")
 
-    # widths
     ws.column_dimensions[get_column_letter(c0)].width = 16
-    for i in range(1, len(PLAZOS) + 1):
+    for i in range(1, len(plazos) + 1):
         ws.column_dimensions[get_column_letter(c0 + i)].width = 10
 
-    # heatmap
     nrows = int(df_matrix_pct.shape[0])
     if nrows:
         top_left = ws.cell(r0 + 2, c0 + 1).coordinate
-        bot_right = ws.cell(r0 + 1 + nrows, c0 + len(PLAZOS)).coordinate
+        bot_right = ws.cell(r0 + 1 + nrows, c0 + len(plazos)).coordinate
         heatmap(ws, f"{top_left}:{bot_right}")
 
 
-
 def main():
-    jsonl_path = load_latest_jsonl()
+    # ---------- INPUTS ----------
+    finaer_jsonl = load_latest_jsonl("finaer_")
 
-    # ----- Finaer -> matriz -----
+    hoggax_path = Path("data/hoggax_rates_long.csv")
+    if not hoggax_path.exists():
+        hoggax_path = Path("data/hoggax_rates.csv")  # fallback
+    if not hoggax_path.exists():
+        raise SystemExit("No encuentro data/hoggax_rates_long.csv ni data/hoggax_rates.csv")
+
+    df_h_long = load_hoggax_rates_long(str(hoggax_path))
+
+    # ---------- HOGGAX: descuento fijo 15% ----------
+    df_h_long["hoggax_desc_pct"] = df_h_long["hoggax_desc_pct"].fillna(15.0)
+
+    # ---------- FINAER (desde JSONL) ----------
     finaer_rows = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(finaer_jsonl, "r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             rec = json.loads(line)
-            s = rec["scenario"]
-            alq = float(s["alquiler"])
-            exp = float(s.get("expensas") or 0)
-            meses = int(s["meses"])
-            alq_exp = alq + exp
 
-            if alq_exp <= 0 or meses not in PLAZOS:
+            s = rec.get("scenario") or {}
+            alq = float(s.get("alquiler") or 0)
+            exp = float(s.get("expensas") or 0)
+            plazo_meses = int(s.get("meses") or 0)
+
+            if plazo_meses not in PLAZOS_FINAER:
                 continue
 
-            p = pick_plan_contado(rec["normalized"]["planes"])
+            total_base = alq + exp
+            if total_base <= 0:
+                continue
+
+            planes = ((rec.get("normalized") or {}).get("planes")) or []
+            p = pick_plan_contado(planes)
+
             monto_final = to_float(p.get("monto_final"))
+            honorario = to_float(p.get("honorario_sin_descuentos"))
+            desc_abs = to_float(p.get("descuento_aplicado"))
+            fecha_desc = p.get("fecha_limite_descuento")
+
             if monto_final is None:
                 continue
 
-            # % sobre (alq+exp)
-            pct_ae = (monto_final / alq_exp) * 100.0
-            finaer_rows.append({"segmento": segmento(alq_exp), "meses": meses, "pct": pct_ae})
+            # % sobre total (Alq+Exp) * plazo
+            pct_sobre_total = (monto_final / (total_base * plazo_meses)) * 100.0
+
+            # descuento % real
+            desc_pct = None
+            if honorario and honorario > 0 and desc_abs is not None:
+                desc_pct = (desc_abs / honorario) * 100.0
+
+            finaer_rows.append(
+                {
+                    "segmento": segmento(total_base),
+                    "plazo_meses": plazo_meses,
+                    "alquiler": alq,
+                    "expensas": exp,
+                    "total_base_$": total_base,
+                    "finaer_precio_$": monto_final,
+                    "finaer_pct_sobre_total": pct_sobre_total,
+                    "finaer_honorario_sin_desc_$": honorario,
+                    "finaer_desc_$": desc_abs,
+                    "finaer_desc_pct": desc_pct,
+                    "finaer_fecha_desc": fecha_desc,
+                }
+            )
 
     df_f = pd.DataFrame(finaer_rows)
     if df_f.empty:
-        raise SystemExit("Finaer: no hay datos para plazos 3/6/12/24/36 en el jsonl.")
+        raise SystemExit("Finaer: no tengo filas (recordá: sólo 12/24/36). Corré la CLI con escenarios 12/24/36.")
 
+    # ---------- DOMINIOS / VALORES QUE TRAE FINAER ----------
+    def uniq_sorted(x: pd.Series):
+        vals = [v for v in pd.unique(x.dropna())]
+        try:
+            return sorted([float(v) for v in vals])
+        except Exception:
+            return sorted([str(v) for v in vals])
+
+    df_f_domains = (
+        df_f.groupby(["segmento", "plazo_meses"], as_index=False)
+        .agg(
+            finaer_precio_values=("finaer_precio_$", uniq_sorted),
+            finaer_pct_values=("finaer_pct_sobre_total", lambda s: [round(float(v), 6) for v in uniq_sorted(s)]),
+            finaer_honorario_values=("finaer_honorario_sin_desc_$", uniq_sorted),
+            finaer_desc_abs_values=("finaer_desc_$", uniq_sorted),
+            finaer_desc_pct_values=("finaer_desc_pct", lambda s: [round(float(v), 6) for v in uniq_sorted(s)]),
+            finaer_fecha_desc_values=("finaer_fecha_desc", lambda s: sorted([str(v) for v in pd.unique(s.dropna())])),
+            n_escenarios=("finaer_precio_$", "count"),
+        )
+    )
+
+    # ---------- PROMEDIOS FINAER (solo para comparativa/matrices) ----------
+    df_f_avg = (
+        df_f.groupby(["segmento", "plazo_meses"], as_index=False)
+        .agg(
+            **{
+                "finaer_precio_$": ("finaer_precio_$", "mean"),
+                "finaer_pct_sobre_total": ("finaer_pct_sobre_total", "mean"),
+                "finaer_honorario_sin_desc_$": ("finaer_honorario_sin_desc_$", "mean"),
+                "finaer_desc_$": ("finaer_desc_$", "mean"),
+                "finaer_desc_pct": ("finaer_desc_pct", "mean"),
+            }
+        )
+    )
+
+    # ---------- HOGGAX (desde CSV manual) ----------
+    df_h_avg = (
+        df_h_long.groupby(["segmento", "plazo_meses"], as_index=False)
+        .agg(
+            **{
+                "hoggax_precio_$": ("hoggax_precio_$", "mean"),
+                "hoggax_pct_sobre_total": ("hoggax_pct_sobre_total", "mean"),
+                "hoggax_desc_pct": ("hoggax_desc_pct", "mean"),
+                "hoggax_cuota_$": ("hoggax_cuota_$", "mean"),
+                "hoggax_cuotas": ("hoggax_cuotas", "mean"),
+            }
+        )
+    )
+
+    # ---------- MATRICES (% sobre total) ----------
     finaer_mat = (
-        df_f.groupby(["segmento", "meses"], as_index=False)["pct"].mean()
-        .pivot(index="segmento", columns="meses", values="pct")
-        .reindex(columns=PLAZOS)
+        df_f_avg.pivot(index="segmento", columns="plazo_meses", values="finaer_pct_sobre_total")
+        .reindex(index=SEGMENTOS, columns=PLAZOS_HOGGAX)
         .reset_index()
     )
-    finaer_mat.columns = ["segmento"] + [str(m) for m in PLAZOS]
+    finaer_mat.columns = ["segmento"] + [str(m) for m in PLAZOS_HOGGAX]
 
-    # ----- Hoggax desde CSV -----
-    hoggax_mat = load_hoggax_rates("data/hoggax_rates.csv")
-    hoggax_mat.columns = ["segmento"] + [str(m) for m in PLAZOS]
+    hoggax_mat = (
+        df_h_avg.pivot(index="segmento", columns="plazo_meses", values="hoggax_pct_sobre_total")
+        .reindex(index=SEGMENTOS, columns=PLAZOS_HOGGAX)
+        .reset_index()
+    )
+    hoggax_mat.columns = ["segmento"] + [str(m) for m in PLAZOS_HOGGAX]
 
-    # ----- Excel -----
+    # ---------- COMPARATIVA ----------
+    comp = pd.merge(df_f_avg, df_h_avg, on=["segmento", "plazo_meses"], how="outer")
+
+    comp["segmento"] = pd.Categorical(comp["segmento"], categories=SEGMENTOS, ordered=True)
+    comp = comp.sort_values(["segmento", "plazo_meses"])
+
+    # ---------- EXCEL ----------
     wb = Workbook()
 
-    ws_in = cast(Worksheet, wb.active)
-    ws_in.title = "Inputs"
-    ws_in.append(["Valor_Alq", "Valor_Exp", "Total_(Alq+Exp)"])
-    ws_in.append([350000, 0, "=A2+B2"])
-    style_header_row(ws_in, 1, 1, 3)
-    ws_in.freeze_panes = "A2"
-    ws_in.column_dimensions["A"].width = 14
-    ws_in.column_dimensions["B"].width = 14
-    ws_in.column_dimensions["C"].width = 18
+    # Sheet 1: Matrices
+    ws_m = cast(Worksheet, wb.active)
+    ws_m.title = "Matrices"
 
-    ws_m = cast(Worksheet, wb.create_sheet("Matrices"))
-    write_matrix(ws_m, "Finaer (% sobre Alq+Exp)", finaer_mat, start_col=1)
-    write_matrix(ws_m, "Hoggax (% sobre Alq+Exp)", hoggax_mat, start_col=8)
+    write_matrix_percent(
+        ws_m,
+        "Finaer (% sobre total garantía)",
+        finaer_mat,
+        PLAZOS_HOGGAX,
+        start_row=1,
+        start_col=1,
+    )
+    write_matrix_percent(
+        ws_m,
+        "Hoggax (% sobre total garantía)",
+        hoggax_mat,
+        PLAZOS_HOGGAX,
+        start_row=1,
+        start_col=8,
+    )
     ws_m.freeze_panes = "A3"
 
-    # ----- Comparativa (FORMATO LONG: uno abajo del otro) -----
+    # Sheet 2: Comparativa (enfocada en monto_final y honorario_sin_descuentos)
     ws_c = cast(Worksheet, wb.create_sheet("Comparativa"))
 
     headers = [
         "segmento",
         "plazo_meses",
-        "Finaer_pct",
-        "Hoggax_pct",
-        "Dif_pct",
-        "Finaer_$",
-        "Hoggax_$",
-        "Dif_$",
+        "finaer_monto_final_$",
+        "finaer_honorario_sin_desc_$",
+        "finaer_desc_%",
+        "hoggax_desc_%",
+        "dif_desc_puntos_(F-H)",
     ]
     ws_c.append(headers)
     style_header_row(ws_c, 1, 1, len(headers))
     ws_c.freeze_panes = "A2"
     ws_c.auto_filter.ref = ws_c.dimensions
 
-    # anchos
-    ws_c.column_dimensions["A"].width = 16
-    ws_c.column_dimensions["B"].width = 12
-    ws_c.column_dimensions["C"].width = 12
-    ws_c.column_dimensions["D"].width = 12
-    ws_c.column_dimensions["E"].width = 12
-    ws_c.column_dimensions["F"].width = 14
-    ws_c.column_dimensions["G"].width = 14
-    ws_c.column_dimensions["H"].width = 14
+    widths = {
+        "A": 16,
+        "B": 11,
+        "C": 18,
+        "D": 22,
+        "E": 14,
+        "F": 14,
+        "G": 18,
+    }
+    for col, w in widths.items():
+        ws_c.column_dimensions[col].width = w
 
-    f_idx = finaer_mat.set_index("segmento")
-    h_idx = hoggax_mat.set_index("segmento")
-    segmentos_all = ["hasta 500k", "500k-800k", "mayor_800k"]
+    for _, r in comp.iterrows():
+        seg = str(r["segmento"]) if pd.notna(r["segmento"]) else ""
+        plazo = int(r["plazo_meses"]) if pd.notna(r["plazo_meses"]) else None
 
-    # filas long: por segmento x plazo
-    for segm in segmentos_all:
-        for m in PLAZOS:
-            f_pct = to_float(f_idx.loc[segm, str(m)]) if segm in f_idx.index else None
-            h_pct = to_float(h_idx.loc[segm, str(m)]) if segm in h_idx.index else None
-            d_pct = (f_pct - h_pct) if (f_pct is not None and h_pct is not None) else None
+        f_price = to_float(r.get("finaer_precio_$"))
+        f_honorario = to_float(r.get("finaer_honorario_sin_desc_$"))
+        f_desc_pct = to_float(r.get("finaer_desc_pct"))
 
-            ws_c.append([segm, m, f_pct, h_pct, d_pct, None, None, None])
+        h_desc_pct = to_float(r.get("hoggax_desc_pct"))
 
-    # formato % y fórmulas $ (Sheets compatible)
-    # Columnas:
-    # A segmento, B plazo_meses, C finaer_pct, D hoggax_pct, E dif_pct, F finaer_$, G hoggax_$, H dif_$
-    for r in range(2, ws_c.max_row + 1):
-        # % -> fracción + formato
-        for col in (3, 4, 5):
-            cell = cast(Cell, ws_c.cell(r, col))
-            if isinstance(cell, MergedCell) or cell.coordinate in ws_c.merged_cells:
+        ws_c.append(
+            [
+                seg,
+                plazo,
+                f_price,
+                f_honorario,
+                f_desc_pct,
+                h_desc_pct,
+                None,
+            ]
+        )
+
+    for rr in range(2, ws_c.max_row + 1):
+        # moneda: C (monto_final), D (honorario_sin_descuentos)
+        for col in (3, 4):
+            cell = cast(Cell, ws_c.cell(rr, col))
+            if isinstance(cell, MergedCell):
+                continue
+            cell.number_format = '"$"#,##0'
+            cell.alignment = Alignment(horizontal="center")
+
+        # %: E (finaer_desc), F (hoggax_desc), G (dif_desc) - guardamos como fracción
+        for col in (5, 6, 7):
+            cell = cast(Cell, ws_c.cell(rr, col))
+            if isinstance(cell, MergedCell):
                 continue
             v = cell.value
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 cell.value = float(v) / 100.0
-                cell.number_format = "0.00%"
-                cell.alignment = Alignment(horizontal="center")
+            cell.number_format = "0.00%"
+            cell.alignment = Alignment(horizontal="center")
 
-        # $ = Total * %
-        f_ref = f"{get_column_letter(3)}{r}"  # C
-        h_ref = f"{get_column_letter(4)}{r}"  # D
+        # diferencia en puntos porcentuales entre Finaer y Hoggax
+        cast(Cell, ws_c.cell(rr, 7)).value = f'=IF(OR(E{rr}="",F{rr}=""),"",E{rr}-F{rr})'
 
-        cell_fd = cast(Cell, ws_c.cell(r, 6))  # F
-        cell_hd = cast(Cell, ws_c.cell(r, 7))  # G
-        cell_dd = cast(Cell, ws_c.cell(r, 8))  # H
+    heatmap(ws_c, f"G2:G{ws_c.max_row}")
 
-        if not isinstance(cell_fd, MergedCell):
-            cell_fd.value = f"=Inputs!$C$2*{f_ref}"
-        if not isinstance(cell_hd, MergedCell):
-            cell_hd.value = f"=Inputs!$C$2*{h_ref}"
-        if not isinstance(cell_dd, MergedCell):
-            cell_dd.value = f"={get_column_letter(6)}{r}-{get_column_letter(7)}{r}"
+    # Sheet 3: Finaer_Valores (dominios reales)
+    ws_v = cast(Worksheet, wb.create_sheet("Finaer_Valores"))
+    headers_v = [
+        "segmento",
+        "plazo_meses",
+        "n_escenarios",
+        "finaer_desc_pct_values",
+        "finaer_desc_abs_values",
+        "finaer_honorario_values",
+        "finaer_precio_values",
+        "finaer_pct_values",
+        "finaer_fecha_desc_values",
+    ]
+    ws_v.append(headers_v)
+    style_header_row(ws_v, 1, 1, len(headers_v))
+    ws_v.freeze_panes = "A2"
+    ws_v.auto_filter.ref = ws_v.dimensions
 
-    # heatmap en Dif_$ (col H)
-    heatmap(ws_c, f"H2:H{ws_c.max_row}")
-    
-    # heatmap en Dif_$
-    dif_cols = [i for i, h in enumerate(headers, 1) if isinstance(h, str) and h.startswith("Dif_$_")]
-    for col in dif_cols:
-        heatmap(ws_c, f"{get_column_letter(col)}2:{get_column_letter(col)}{ws_c.max_row}")
+    for i, w in enumerate([16, 11, 12, 28, 28, 28, 28, 28, 28], start=1):
+        ws_v.column_dimensions[get_column_letter(i)].width = w
 
-    out = Path("output") / f"matrices_compare_{jsonl_path.stem}.xlsx"
+    df_f_domains = df_f_domains.sort_values(["segmento", "plazo_meses"])
+    for _, r in df_f_domains.iterrows():
+        ws_v.append(
+            [
+                str(r["segmento"]),
+                int(r["plazo_meses"]),
+                int(r["n_escenarios"]),
+                str(r["finaer_desc_pct_values"]),
+                str(r["finaer_desc_abs_values"]),
+                str(r["finaer_honorario_values"]),
+                str(r["finaer_precio_values"]),
+                str(r["finaer_pct_values"]),
+                str(r["finaer_fecha_desc_values"]),
+            ]
+        )
+
+    out = Path("output") / f"compare_exact_finaer_{finaer_jsonl.stem}.xlsx"
+    out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
-    print("Wrote", out)
+    print(f"Wrote Excel -> {out}")
 
 
 if __name__ == "__main__":

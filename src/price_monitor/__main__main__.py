@@ -1,49 +1,23 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-import subprocess
-import sys
+import pandas as pd
 
 
-def run(cmd: list[str]) -> int:
-    print("+", " ".join(cmd))
-    return subprocess.call(cmd)
+def main():
+    out = Path("data/scenarios.csv")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        {"scenario_id": "S_499999_24", "alquiler": 499_999, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+        {"scenario_id": "S_799999_24", "alquiler": 799_999, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+        {"scenario_id": "S_801000_24", "alquiler": 801_000, "expensas": 0, "meses": 24, "tipo_garantia": False, "run": True},
+    ]
+
+    df = pd.DataFrame(rows)
+    df.to_csv(out, index=False)
+    print(f"Wrote {len(df)} scenarios -> {out}")
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(prog="price-monitor")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    s = sub.add_parser("summary", help="Genera escenarios, corre scraping (API) y exporta Excel promedio")
-    s.add_argument("--no-generate", action="store_true", help="No regenera data/scenarios.csv")
-    s.add_argument("--no-run", action="store_true", help="No corre la recolección (cli)")
-    s.add_argument("--no-report", action="store_true", help="No genera el excel resumen")
-    s.add_argument("--scenarios", default="scripts/generate_scenarios.py")
-    s.add_argument("--report", default="scripts/make_summary_simple.py")
-
-    args = p.parse_args()
-
-    if args.cmd == "summary":
-        root = Path.cwd()
-        if not (root / "pyproject.toml").exists():
-            print("Ejecutá esto desde la raíz del repo (donde está pyproject.toml).")
-            sys.exit(2)
-
-        code = 0
-        if not args.no_generate:
-            code = run([sys.executable, args.scenarios])
-            if code != 0:
-                sys.exit(code)
-
-        if not args.no_run:
-            code = run([sys.executable, "-m", "price_monitor.cli"])
-            if code != 0:
-                sys.exit(code)
-
-        if not args.no_report:
-            code = run([sys.executable, args.report])
-            if code != 0:
-                sys.exit(code)
-
-        print("OK. Revisá output/")
+if __name__ == "__main__":
+    main()

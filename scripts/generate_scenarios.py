@@ -8,28 +8,31 @@ def main():
     out = Path("data/scenarios.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    alquileres = list(range(200_000, 1_200_001, 100_000))
-    expensas = [0, 50_000, 100_000]
-    meses = [3, 6, 12, 24, 36]
+    alquileres = [499_999, 799_999, 801_000]
+    expensas = [0]
+    meses = [24, 36]          # <-- ACÁ agregás 36
+    tipo_garantia = [False]
 
     rows = []
     i = 1
     for a in alquileres:
         for e in expensas:
             for m in meses:
-                rows.append({
-                    "scenario_id": f"AUTO_{i:04d}",
-                    "alquiler": a,
-                    "expensas": e,
-                    "meses": m,
-                    "tipo_garantia": False,
-                    "run": True,
-                })
-                i += 1
+                for tg in tipo_garantia:
+                    rows.append(
+                        {
+                            "scenario_id": f"S_{a}_{m}",
+                            "alquiler": a,
+                            "expensas": e,
+                            "meses": m,
+                            "tipo_garantia": tg,
+                            "run": True,
+                        }
+                    )
+                    i += 1
 
-    df = pd.DataFrame(rows)
-    df.to_csv(out, index=False)
-    print(f"Wrote {len(df)} scenarios -> {out}")
+    pd.DataFrame(rows).to_csv(out, index=False)
+    print(f"Wrote {len(rows)} scenarios -> {out}")
 
 
 if __name__ == "__main__":

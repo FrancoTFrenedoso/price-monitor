@@ -74,6 +74,9 @@ def main():
     jsonl_to_excel(out_path, xlsx_path)
     print(f"Wrote Excel -> {xlsx_path}")
 
+    print(f"Wrote Excel -> {xlsx_path}")
+
+
 
 if __name__ == "__main__":
     main()

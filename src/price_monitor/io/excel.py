@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
 import pandas as pd
 
 
+def _to_float(x: Any):
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
 def jsonl_to_excel(jsonl_path: str | Path, xlsx_path: str | Path):
-    rows: list[dict] = []
+    rows = []
 
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -14,37 +25,107 @@ def jsonl_to_excel(jsonl_path: str | Path, xlsx_path: str | Path):
                 continue
             rec = json.loads(line)
 
-            base = {
-                "ts": rec.get("ts_utc"),
-                "competitor": rec.get("competitor"),
-                "scenario_id": rec.get("scenario_id"),
-                "alquiler": rec["scenario"].get("alquiler"),
-                "expensas": rec["scenario"].get("expensas"),
-                "alquiler_mas_expensas": (rec["scenario"].get("alquiler") or 0) + (rec["scenario"].get("expensas") or 0),
-                "meses": rec["scenario"].get("meses"),
-                "tipo_garantia": rec["scenario"].get("tipo_garantia"),
-            }
+            ts = rec.get("ts_utc")
+            competitor = rec.get("competitor")
+            scenario_id = rec.get("scenario_id")
+            scenario = rec.get("scenario") or {}
+            alquiler = _to_float(scenario.get("alquiler")) or 0.0
+            expensas = _to_float(scenario.get("expensas")) or 0.0
+            meses = int(scenario.get("meses") or 0)
+            base_total = (alquiler + expensas) * meses if meses else None
 
-            for p in rec.get("normalized", {}).get("planes", []):
-                rows.append(base | {
-                    "cuotas": p.get("cuotas"),
-                    "monto_final": p.get("monto_final"),
-                    "anticipo": p.get("anticipo"),
-                    "monto_cuotas": p.get("monto_cuotas"),
+            norm = rec.get("normalized") or {}
+            planes = norm.get("planes") or []
 
-                    "honorario_sin_descuentos": p.get("honorario_sin_descuentos"),
-                    "descuento_aplicado": p.get("descuento_aplicado"),
-                    "pct_descuento_aplicado_api": p.get("pct_descuento_aplicado_api"),
-                    "pct_descuento_real": p.get("pct_descuento_real"),
+            # Finaer: tus claves actuales
+            # Hoggax: claves del normalize_hoggax
+            for p in planes:
+                row = {
+                    "ts": ts,
+                    "competitor": competitor,
+                    "scenario_id": scenario_id,
+                    "alquiler": alquiler,
+                    "expensas": expensas,
+                    "meses": meses,
+                    "alq_exp": alquiler + expensas,
+                    "base_total": base_total,
+                }
 
-                    "fecha_limite_descuento": p.get("fecha_limite_descuento"),
-                    "costo_mensual_equiv": p.get("costo_mensual_equiv"),
+                if competitor == "finaer":
+                    cuotas = int(p.get("cuotas") or 0)
+                    total_final = _to_float(p.get("monto_final"))
+                    monto_cuotas = _to_float(p.get("monto_cuotas"))
+                    anticipo = _to_float(p.get("anticipo"))
 
-                    "pct_sobre_total_alquiler": p.get("pct_sobre_total_alquiler"),
-                    "pct_sobre_total_alq_exp": p.get("pct_sobre_total_alq_exp"),
-                })
+                    honorario = _to_float(p.get("honorario_sin_descuentos"))
+                    desc_abs = _to_float(p.get("descuento_aplicado"))
+                    desc_pct = _to_float(p.get("pct_descuento_real"))  # fracción
+
+                    row |= {
+                        "plan": f"{cuotas} cuotas",
+                        "cuotas": cuotas,
+                        "total_final": total_final,
+                        "monto_cuota": monto_cuotas,
+                        "anticipo": anticipo,
+                        "honorario_sin_desc": honorario,
+                        "desc_abs": desc_abs,
+                        "desc_pct": desc_pct,
+                        "fecha_limite_desc": p.get("fecha_limite_descuento"),
+                    }
+
+                else:
+                    # Hoggax normalize_hoggax
+                    total_final = _to_float(p.get("total_final"))
+                    cuota = _to_float(p.get("cuota"))
+                    anticipo = _to_float(p.get("anticipo"))
+                    desc_abs = _to_float(p.get("desc_abs"))
+                    desc_pct = _to_float(p.get("desc_pct"))  # fracción
+
+                    row |= {
+                        "plan": p.get("metodo"),
+                        "cuotas": None,
+                        "total_final": total_final,
+                        "monto_cuota": cuota,
+                        "anticipo": anticipo,
+                        "honorario_sin_desc": None,
+                        "desc_abs": desc_abs,
+                        "desc_pct": desc_pct,
+                        "fecha_limite_desc": None,
+                        "info": p.get("info"),
+                    }
+
+                # métricas comunes
+                pct_sobre_base = (total_final / base_total) if (total_final is not None and base_total) else None
+                row["pct_sobre_base"] = pct_sobre_base  # fracción
+
+                rows.append(row)
 
     df = pd.DataFrame(rows)
-    out = Path(xlsx_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_excel(out, index=False)
+
+    Path(xlsx_path).parent.mkdir(parents=True, exist_ok=True)
+
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as w:
+        df.to_excel(w, sheet_name="Planes", index=False)
+
+        # hoja resumen simple por segmento/plazo/competidor (promedio)
+        if not df.empty:
+            def seg(x):
+                if x <= 500_000:
+                    return "hasta 500k"
+                if x <= 800_000:
+                    return "500k-800k"
+                return "mayor_800k"
+
+            df2 = df.copy()
+            df2["segmento"] = df2["alq_exp"].apply(seg)
+
+            # promedio por competitor/segmento/meses de pct_sobre_base y descuento
+            piv = (
+                df2.groupby(["competitor", "segmento", "meses"], as_index=False)
+                .agg(
+                    pct_sobre_base=("pct_sobre_base", "mean"),
+                    desc_pct=("desc_pct", "mean"),
+                    desc_abs=("desc_abs", "mean"),
+                )
+            )
+            piv.to_excel(w, sheet_name="Resumen", index=False)
