@@ -10,21 +10,36 @@ from price_monitor.io.files import write_jsonl, utc_stamp
 from price_monitor.io.excel import jsonl_to_excel
 
 
+def _repo_root() -> Path:
+    """
+    Busca el root del repo subiendo carpetas hasta encontrar pyproject.toml.
+    Funciona aunque el usuario ejecute desde cualquier cwd.
+    """
+    here = Path(__file__).resolve()
+    for p in [here] + list(here.parents):
+        if (p / "pyproject.toml").exists():
+            return p
+    # fallback: carpeta src/price_monitor -> subir 2 niveles
+    return Path(__file__).resolve().parents[2]
+
+
 def main():
-    csv_path = Path("data/scenarios.csv")
+    root = _repo_root()
+
+    csv_path = root / "data" / "scenarios.csv"
     if not csv_path.exists():
-        print("No existe data/scenarios.csv")
+        print(f"No existe {csv_path}")
         return
 
     df = load_scenarios_csv(csv_path)
     df = df[df["run"] == True]
 
     if df.empty:
-        print("No hay escenarios con run=true en data/scenarios.csv")
+        print(f"No hay escenarios con run=true en {csv_path}")
         return
 
     ts = utc_stamp()
-    out_dir = Path("output")
+    out_dir = root / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = out_dir / f"finaer_{ts}.jsonl"
@@ -41,19 +56,21 @@ def main():
             )
             norm = normalize_finaer(raw)
 
-            rows.append({
-                "ts_utc": ts,
-                "competitor": "finaer",
-                "scenario_id": r["scenario_id"],
-                "scenario": {
-                    "alquiler": int(r["alquiler"]),
-                    "expensas": int(r["expensas"]),
-                    "meses": int(r["meses"]),
-                    "tipo_garantia": bool(r["tipo_garantia"]),
-                },
-                "normalized": norm,
-                "raw": raw,
-            })
+            rows.append(
+                {
+                    "ts_utc": ts,
+                    "competitor": "finaer",
+                    "scenario_id": r["scenario_id"],
+                    "scenario": {
+                        "alquiler": int(r["alquiler"]),
+                        "expensas": int(r["expensas"]),
+                        "meses": int(r["meses"]),
+                        "tipo_garantia": bool(r["tipo_garantia"]),
+                    },
+                    "normalized": norm,
+                    "raw": raw,
+                }
+            )
 
             print(f"OK {r['scenario_id']} -> planes: {len(norm.get('planes', []))}")
 
@@ -74,10 +91,6 @@ def main():
     jsonl_to_excel(out_path, xlsx_path)
     print(f"Wrote Excel -> {xlsx_path}")
 
-    print(f"Wrote Excel -> {xlsx_path}")
-
-
 
 if __name__ == "__main__":
     main()
-
